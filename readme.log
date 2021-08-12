@@ -1,0 +1,258 @@
+使用下面的命令进行下载：
+$ wget https://github.com/chhabhaiya/undrop-for-innodb/archive/master.zip
+或者：
+$ git clone https://github.com/twindb/undrop-for-innodb.git
+在编译前需要安装下面的依赖包：
+# apt install make gcc flex bison
+使用make生成执行文件：
+# make
+
+使用方法
+
+1.恢复表结构
+
+当MySQL无法启动时，TwinDB工具集可以从系统表空间文件ibdata1中直接恢复表结构。
+这个工具集安装完成后dictionary目录下面有创建4个数据字典表的SQL语句：
+# ls dictionary/
+
+SYS_COLUMNS.sql  SYS_FIELDS.sql  SYS_INDEXES.sql  SYS_TABLES.sql
+创建一个data_recovered数据库：
+# mysqladmin create data_recovered
+在这个数据库中生成4个数据字典表：
+# cat dictionary/SYS_* | mysql data_recovered
+检查一下生成的数据：
+# mysqlshow -vv data_recovered
+
+Database: data_recovered
+
++-------------+----------+------------+
+
+|   Tables    | Columns  | Total Rows |
+
++-------------+----------+------------+
+
+| SYS_COLUMNS |        7 |          0 |
+
+| SYS_FIELDS  |        3 |          0 |
+
+| SYS_INDEXES |        7 |          0 |
+
+| SYS_TABLES  |        8 |          0 |
+
++-------------+----------+------------+
+
+4 rows in set.
+使用工具集中的stream_parser对系统表空间文件ibdata1进行解析：
+# ./stream_parser -f /var/lib/mysql/ibdata1
+
+Opening file: /var/lib/mysql/ibdata1
+
+File information:
+
+ 
+
+ID of device containing file:        64768
+
+inode number:                     29252470
+
+protection:                         100640 (regular file)
+
+number of hard links:                    1
+
+user ID of owner:                       27
+
+group ID of owner:                      27
+
+device ID (if special file):             0
+
+blocksize for filesystem I/O:         4096
+
+number of blocks allocated:          24576
+
+Opening file: /var/lib/mysql/ibdata1
+
+...
+解析完成后将解析的数据放在当前目录下的pages-ibdata1目录下：
+# ls pages-ibdata1/*
+
+pages-ibdata1/FIL_PAGE_INDEX:
+
+0000000000000001.page  0000000000000011.page  0000000000000016.page  0000000000000026.page  0000000000000043.page
+
+0000000000000002.page  0000000000000012.page  0000000000000017.page  0000000000000032.page  0000000000000044.page
+
+0000000000000003.page  0000000000000013.page  0000000000000020.page  0000000000000033.page  0000000000000045.page
+
+0000000000000004.page  0000000000000014.page  0000000000000024.page  0000000000000041.page  18446744069414584320.page
+
+0000000000000005.page  0000000000000015.page  0000000000000025.page  0000000000000042.page
+
+ 
+
+pages-ibdata1/FIL_PAGE_TYPE_BLOB:
+根据MySQL的源码，这4个数据字典表的数据分别位于前面4个页中，使用下面的4条语句从这4个页中读出数据：
+# ./c_parser -4f pages-ibdata1/FIL_PAGE_INDEX/0000000000000001.page -t \
+
+ dictionary/SYS_TABLES.sql > dumps/default/SYS_TABLES \
+
+ 2>dumps/default/SYS_TABLES.sql
+
+ 
+
+# ./c_parser -4f pages-ibdata1/FIL_PAGE_INDEX/0000000000000002.page -t \
+
+ dictionary/SYS_COLUMNS.sql > dumps/default/SYS_COLUMNS \
+
+ 2>dumps/default/SYS_COLUMNS.sql
+
+ 
+
+# ./c_parser -4f pages-ibdata1/FIL_PAGE_INDEX/0000000000000003.page -t \
+
+ dictionary/SYS_INDEXES.sql > dumps/default/SYS_INDEXES \
+
+ 2>dumps/default/SYS_INDEXES.sql
+
+ 
+
+# ./c_parser -4f pages-ibdata1/FIL_PAGE_INDEX/0000000000000004.page -t \
+
+ dictionary/SYS_FIELDS.sql > dumps/default/SYS_FIELDS \
+
+ 2>dumps/default/SYS_FIELDS.sql
+使用下面的命令将数据导入到这4个表中：
+# cat dumps/default/*.sql |  mysql data_recovered
+导出完成后再检查一下：
+#  mysqlshow -vv data_recovered
+
+Database: data_recovered
+
++-------------+----------+------------+
+
+|   Tables    | Columns  | Total Rows |
+
++-------------+----------+------------+
+
+| SYS_COLUMNS |        7 |        157 |
+
+| SYS_FIELDS  |        3 |         50 |
+
+| SYS_INDEXES |        7 |         35 |
+
+| SYS_TABLES  |        8 |         28 |
+
++-------------+----------+------------+
+
+4 rows in set.
+这样所有表的数据字典信息都恢复到这4个表中了，下面编译生成sys_parser工具：
+# make sys_parser
+
+/bin/mysql_config
+
+cc -o sys_parser sys_parser.c `mysql_config --cflags` `mysql_config --libs`
+使用sys_parser工具可以从数据字典表中生成任意表的建表语句，它的用法如下：
+# ./sys_parser 
+
+sys_parser [-h <host>] [-u <user>] [-p <passowrd>] [-d <db>] databases/table
+例如下面的语句生成world.city表的建表语句：
+# ./sys_parser -u root -p dingjia  -d data_recovered world/city
+
+CREATE TABLE `city`(
+
+     `ID` INT NOT NULL,
+
+     `Name` CHAR(35) CHARACTER SET 'utf8mb4' COLLATE 'utf8mb4_general_ci' NOT NULL,
+
+     `CountryCode` CHAR(3) CHARACTER SET 'utf8mb4' COLLATE 'utf8mb4_general_ci' NOT NULL,
+
+     `District` CHAR(20) CHARACTER SET 'utf8mb4' COLLATE 'utf8mb4_general_ci' NOT NULL,
+
+     `Population` INT NOT NULL,
+
+     PRIMARY KEY (`ID`)
+
+) ENGINE=InnoDB;
+
+
+2.恢复删除的表
+TwinDB工具集可以用于恢复刚刚被误删除的表，如果误删除了world.city表，这个表对应的独立表空间文件/var/lib/mysql/world/city.ibd也被删除，使用前面的命令可以恢复这个表的表结构，然后使用下面的命令恢复InnoDB的页：
+# ./stream_parser -f /dev/sda2 -t 59.5G
+这里的/dev/sda2是world.city表所在的硬盘分区，59.5G是这个分区的大小，如果这个表是放在通用表空间，删除这个表时不会同时删除这个表空间，应将上面命令中的/dev/sda2换成对应的表空间文件名。stream_parser会扫描这个分区，将所有的InnoDB页都解析出来放在下面的目录：
+# ls pages-sda2/FIL_PAGE_INDEX
+
+0000000000000001.page  0000000000000033.page  0000000000000062.page  0000000000000092.page  0000000000000125.page
+
+0000000000000002.page  0000000000000034.page  0000000000000063.page  0000000000000093.page  0000000000000126.page
+
+0000000000000003.page  0000000000000035.page  0000000000000064.page  0000000000000094.page  0000000000000127.page
+
+...
+根据之前生成的数据字典信息，使用下面的命令查询出world.city的表ID：
+mysql> select * from data_rrecovered.SYS_TABLES where name='world/city';
+
++------------+----+--------+------+--------+---------+--------------+-------+
+
+| NAME       | ID | N_COLS | TYPE | MIX_ID | MIX_LEN | CLUSTER_NAME | SPACE |
+
++------------+----+--------+------+--------+---------+--------------+-------+
+
+| world/city | 40 |      5 |   33 |      0 |      80 |              |    23 |
+
++------------+----+--------+------+--------+---------+--------------+-------+
+
+1 row in set (0.00 sec)
+知道world.city的表ID为40后，再查询主键的ID：
+mysql> select * from data_recovered.SYS_INDEXES where table_id=40;
+
++----------+----+-------------+----------+------+-------+---------+
+
+| TABLE_ID | ID | NAME        | N_FIELDS | TYPE | SPACE | PAGE_NO |
+
++----------+----+-------------+----------+------+-------+---------+
+
+|       40 | 41 | PRIMARY     |        1 |    3 |    23 |       3 |
+
+|       40 | 42 | CountryCode |        1 |    0 |    23 |       4 |
+
++----------+----+-------------+----------+------+-------+---------+
+
+2 rows in set (0.00 sec)
+知道主键的ID为41，因为InnoDB都是索引组织表，数据按主键进行存放，因此这个表的数据就在第41页，可以使用c_parser解析第41页，将数据输出到文件中：
+# ./c_parser -6f pages-city.ibd/FIL_PAGE_INDEX/0000000000000041.page -t city.sql \
+
+> > dumps/default/city \
+
+> 2>dumps/default/city.sql
+查看生成的SQL文件：
+# cat dumps/default/city.sql
+
+SET FOREIGN_KEY_CHECKS=0;
+
+LOAD DATA LOCAL INFILE '/root/install/undrop-for-innodb-master/dumps/default/city' REPLACE INTO TABLE `city` FIELDS TERMINATED BY '\t' OPTIONALLY ENCLOSED BY '"' LINES STARTING BY 'city\t' (`ID`, `Name`, `CountryCode`, `District`, `Population`);
+执行这个SQL文件将数据加载到数据库中：
+# cat dumps/default/city.sql | mysql world
+数据恢复成功！
+
+3.从损坏的表空间中挽救数据
+造成表空间损坏的原因很多：硬盘坏道、多个进程同时访问数据文件、突然掉电等。遇到表空间损坏时，TwinDB工具集可以跳过损坏的部分，尽量读取多的数据。
+表空间损坏后可能造成MySQL实例无法启动，或者客户端在查询损坏的表时crash，在MySQL的错误日志里可能会有下面的提示：
+0 [ERROR] InnoDB: Database page corruption on disk or a failed file read of page [page id: space=24, page number=4]. You may have to recover from a backup.
+使用innochecksum检查损坏的表可能会有下面的提示：
+# innochecksum  /var/lib/mysql/world/country.ibd
+
+Fail: page 0 invalid
+
+Exceeded the maximum allowed checksum mismatch count::0
+这时可以使用TwinDB工具集将对应的表空间分成页：
+# ./stream_parser -f /var/lib/mysql/world/country.ibd
+这个命令执行后会生成一个页：
+# ls pages-country.ibd/FIL_PAGE_INDEX/
+
+0000000000000043.page
+使用下面的命令从第43页中导出数据：
+# ./c_parser -6f pages-country.ibd/FIL_PAGE_INDEX/0000000000000043.page \
+
+ -t country.sql > dumps/default/country 2> dumps/default/country.sql
+对导出的文件dumps/default/city进行检查，确认无误后再导入到重新创建的表中：
+# cat dumps/default/city.sql | mysql world
+ 
